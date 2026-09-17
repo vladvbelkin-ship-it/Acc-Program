@@ -1,0 +1,428 @@
+// ===== КОНСТАНТЫ ДЛЯ НАСТРОЙКИ =====
+// ID файлов для разных центров
+const SPREADSHEET_IDS = {
+  // Файлы для расписания
+  SCHEDULE: {
+    VOLNAYA: '15C9IVx2dtCrk1MAFhHRuzxlik8qsIfUccd7JeE4wTjk',    // ID файла Расписание Вольная
+    UDALTSOVA: '1cRoeQXtE1WSezyym53mB-RaIoIekOeYck1EDYY9Ik5w'   // ID файла Расписание Удальцова
+  },
+  // Файлы для учета клиентов
+  CLIENT: {
+    VOLNAYA: '1vnzdtTsMBT0SEPEKJVD2B5IagP2hxIWRI_SggKPIu9c',    // ID файла Учет Вольная
+    UDALTSOVA: '1QVDVUxaTBZITiWuybfl9vz8VMh70R7zCwHmPHfGj4bY'   // ID файла Учет Удальцова
+  }
+};
+
+// Настройки для расписания
+const SCHEDULE_CONFIG = {
+  SATURDAY_START_ROW: 15,    // Строка, с которой начинается суббота
+  MAX_ROWS: 50,              // Максимальное количество строк для поиска
+  SPECIALIST: 'Ирина Б',     // Имя специалиста по умолчанию
+  DEFAULT_TIME: '10:00-11:00', // Время по умолчанию
+  SERVICE: 'НПД'             // Услуга по умолчанию
+};
+
+// Настройки для таблицы Клиенты
+const CLIENT_CONFIG = {
+  PRICE: 6500,               // Стоимость разового занятия
+  TYPE: 'Индив',             // Тип занятия
+  SERVICE: 'НПД'             // Услуга
+};
+// ===== КОНЕЦ КОНСТАНТ =====
+
+function processSelectedCell() {
+  // 1. Получаем активную таблицу и лист
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getActiveSheet();
+  var range = ss.getActiveRange();
+  var row = range.getRow();
+  
+  // Проверяем, что нажатие не произошло в строке заголовков или выше
+  if (row < 3) {
+    SpreadsheetApp.getUi().alert('Пожалуйста, нажмите кнопку в строке с данными, начиная со строки 3.');
+    return;
+  }
+
+  // ===== СОБИРАЕМ ДАННЫЕ ИЗ ИСХОДНОЙ ТАБЛИЦЫ =====
+  var headerRow = 2;
+  var lastCol = sheet.getLastColumn();
+  var headers = sheet.getRange(headerRow, 1, 1, lastCol).getValues()[0];
+  var rowData = sheet.getRange(row, 1, 1, lastCol).getValues()[0];
+  
+  // Функция для поиска индекса столбца по части названия
+  function findColumnIndex(partialName) {
+    for (var i = 0; i < headers.length; i++) {
+      var header = String(headers[i]).trim().toLowerCase();
+      var searchName = partialName.trim().toLowerCase();
+      if (header.indexOf(searchName) !== -1) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  // Находим все нужные столбцы
+  var colIndexes = {
+    center: findColumnIndex('В какой Центр'),
+    client: findColumnIndex('Клиент'),
+    phone: findColumnIndex('Телефон'),
+    description: findColumnIndex('Описание'),
+    note: findColumnIndex('Примечание')
+  };
+
+  // Проверяем обязательные столбцы
+  if (colIndexes.center === -1) {
+    SpreadsheetApp.getUi().alert('❌ Не найден столбец "В какой Центр"');
+    return;
+  }
+  if (colIndexes.client === -1) {
+    SpreadsheetApp.getUi().alert('❌ Не найден столбец "Клиент"');
+    return;
+  }
+
+  // Извлекаем данные
+  var sourceData = {
+    center: String(rowData[colIndexes.center]).trim(),
+    client: String(rowData[colIndexes.client]).trim(),
+    phone: (colIndexes.phone !== -1) ? String(rowData[colIndexes.phone]).trim() : '',
+    description: (colIndexes.description !== -1) ? String(rowData[colIndexes.description]).trim() : '',
+    note: (colIndexes.note !== -1) ? String(rowData[colIndexes.note]).trim() : ''
+  };
+
+  // Проверяем заполненность обязательных полей
+  if (!sourceData.center) {
+    SpreadsheetApp.getUi().alert('❌ В строке ' + row + ' не указан Центр.');
+    return;
+  }
+  if (!sourceData.client) {
+    SpreadsheetApp.getUi().alert('❌ В строке ' + row + ' не указан Клиент.');
+    return;
+  }
+
+  // ===== ФОРМИРУЕМ ПРИМЕЧАНИЕ =====
+  var noteText = '';
+  if (sourceData.phone) {
+    noteText = noteText + 'Телефон: ' + sourceData.phone;
+  }
+  if (sourceData.description) {
+    if (noteText) noteText = noteText + '\n';
+    noteText = noteText + sourceData.description;
+  }
+  if (sourceData.note) {
+    if (noteText) noteText = noteText + '\n';
+    noteText = noteText + sourceData.note;
+  }
+
+  // ===== ОПРЕДЕЛЯЕМ ЦЕНТР И ID ФАЙЛОВ =====
+  var centerKey;
+  var centerName;
+  var centerLower = sourceData.center.toLowerCase();
+  
+  if (centerLower.indexOf('вольн') !== -1) {
+    centerKey = 'VOLNAYA';
+    centerName = 'Вольная';
+  } else if (centerLower.indexOf('удаль') !== -1) {
+    centerKey = 'UDALTSOVA';
+    centerName = 'Удальцова';
+  } else {
+    SpreadsheetApp.getUi().alert('❌ Неизвестный Центр: "' + sourceData.center + '". Допустимые значения: "Вольная" или "Удальцова".');
+    return;
+  }
+
+  // Получаем ID файлов для выбранного центра
+  var scheduleFileId = SPREADSHEET_IDS.SCHEDULE[centerKey];
+  var clientFileId = SPREADSHEET_IDS.CLIENT[centerKey];
+
+  // ===== ОТКРЫВАЕМ ФАЙЛЫ =====
+  var scheduleSS;
+  var clientSS;
+  var openErrors = [];
+  
+  try {
+    scheduleSS = SpreadsheetApp.openById(scheduleFileId);
+  } catch (e) {
+    openErrors.push('❌ Не удалось открыть файл "Расписание ' + centerName + '": ' + e.message);
+  }
+  
+  try {
+    clientSS = SpreadsheetApp.openById(clientFileId);
+  } catch (e) {
+    openErrors.push('❌ Не удалось открыть файл "Учет ' + centerName + '": ' + e.message);
+  }
+  
+  if (openErrors.length > 0) {
+    SpreadsheetApp.getUi().alert('Ошибка открытия файлов:\n\n' + openErrors.join('\n\n'));
+    return;
+  }
+  
+  // ===== ЗАПИСЬ В ФАЙЛ "РАСПИСАНИЕ" =====
+  var scheduleSuccess = false;
+  var scheduleRow = 0;
+  var scheduleErrors = [];
+  var scheduleClientName = sourceData.client; // Переменная для имени в расписании
+  
+  try {
+    var targetSheet = scheduleSS.getSheetByName('Расписание');
+    if (!targetSheet) {
+      scheduleErrors.push('Лист "Расписание" не найден');
+    } else {
+      // Настройки для субботы
+      var saturdayStartRow = SCHEDULE_CONFIG.SATURDAY_START_ROW;
+      var colTime = 8;        // Столбец I - Время
+      var colSpecialist = 9;  // Столбец J - Специалист
+      var colClient = 10;     // Столбец K - С кем занятие
+      var colService = 11;    // Столбец L - Услуга
+      
+      // Находим первую свободную строку в субботе
+      var currentRow = saturdayStartRow;
+      var maxRows = SCHEDULE_CONFIG.MAX_ROWS;
+      
+      while (currentRow < saturdayStartRow + maxRows) {
+        var timeValue = targetSheet.getRange(currentRow, colTime + 1).getValue();
+        if (!timeValue || timeValue === '') {
+          break;
+        }
+        currentRow++;
+      }
+      
+      if (currentRow >= saturdayStartRow + maxRows) {
+        scheduleErrors.push('Не найдено свободных строк в субботе. Таблица заполнена.');
+      } else {
+        // ===== ФОРМИРУЕМ ИМЯ ДЛЯ РАСПИСАНИЯ (с 4 цифрами телефона) =====
+        if (sourceData.phone) {
+          var phoneDigits = sourceData.phone.replace(/\D/g, '');
+          if (phoneDigits.length >= 4) {
+            var phoneLastDigits = phoneDigits.slice(-4);
+            scheduleClientName = sourceData.client + ' (' + phoneLastDigits + ')';
+          }
+        }
+        
+        // Записываем данные в расписание
+        targetSheet.getRange(currentRow, colSpecialist + 1).setValue(SCHEDULE_CONFIG.SPECIALIST);
+        targetSheet.getRange(currentRow, colClient + 1).setValue(scheduleClientName);
+        targetSheet.getRange(currentRow, colService + 1).setValue(SCHEDULE_CONFIG.SERVICE);
+        
+        // Добавляем примечание к ячейке K
+        if (noteText) {
+          targetSheet.getRange(currentRow, colClient + 1).setNote(noteText);
+        }
+        
+        // Если в столбце Время (I) пусто, ставим значение по умолчанию
+        var timeValue = targetSheet.getRange(currentRow, colTime + 1).getValue();
+        if (!timeValue || timeValue === '') {
+          targetSheet.getRange(currentRow, colTime + 1).setValue(SCHEDULE_CONFIG.DEFAULT_TIME);
+        }
+        
+        scheduleSuccess = true;
+        scheduleRow = currentRow;
+      }
+    }
+  } catch (e) {
+    scheduleErrors.push('Ошибка при записи в расписание: ' + e.message);
+  }
+
+  // ===== ЗАПИСЬ В ФАЙЛ "УЧЕТ" (таблица Клиенты) =====
+  var clientSuccess = false;
+  var clientRow = 0;
+  var clientFields = {};
+  var clientErrors = [];
+  
+  try {
+    var clientsSheet = clientSS.getSheetByName('Клиенты');
+    if (!clientsSheet) {
+      clientErrors.push('Лист "Клиенты" не найден');
+    } else {
+      // Проверяем права на запись
+      try {
+        var testRange = clientsSheet.getRange(1, 1);
+        var testValue = testRange.getValue();
+        testRange.setValue('test_write');
+        testRange.setValue(testValue);
+      } catch (permError) {
+        clientErrors.push('❌ НЕТ ПРАВ НА ЗАПИСЬ в файл "Учет ' + centerName + '".\n\n' +
+                         'РЕШЕНИЕ:\n' +
+                         '1. Откройте файл "' + clientSS.getName() + '"\n' +
+                         '2. Нажмите "Предоставить доступ"\n' +
+                         '3. Или скопируйте скрипт в этот файл');
+        throw new Error('permission_error');
+      }
+      
+      // Ищем строку с заголовками
+      var headerRowIndex = 1;
+      var clientsHeaders = [];
+      var maxRowsToCheck = 10;
+      
+      for (var r = 1; r <= maxRowsToCheck; r++) {
+        var rowValues = clientsSheet.getRange(r, 1, 1, clientsSheet.getLastColumn()).getValues()[0];
+        var hasData = false;
+        for (var c = 0; c < rowValues.length; c++) {
+          if (rowValues[c] && String(rowValues[c]).trim() !== '') {
+            hasData = true;
+            break;
+          }
+        }
+        if (hasData) {
+          headerRowIndex = r;
+          clientsHeaders = rowValues;
+          break;
+        }
+      }
+      
+      if (clientsHeaders.length === 0) {
+        clientsHeaders = clientsSheet.getRange(1, 1, 1, clientsSheet.getLastColumn()).getValues()[0];
+        headerRowIndex = 1;
+      }
+      
+      // Функция для поиска индекса столбца
+      function findClientColumnIndex(partialName) {
+        for (var i = 0; i < clientsHeaders.length; i++) {
+          var header = String(clientsHeaders[i]).trim();
+          var searchName = partialName.trim();
+          if (header === searchName) {
+            return i;
+          }
+        }
+        for (var i = 0; i < clientsHeaders.length; i++) {
+          var header = String(clientsHeaders[i]).trim().toLowerCase();
+          var searchName = partialName.trim().toLowerCase();
+          if (header.indexOf(searchName) !== -1) {
+            return i;
+          }
+        }
+        return -1;
+      }
+
+      // Ищем индексы нужных столбцов
+      var clientColIndexes = {
+        name: findClientColumnIndex('Имя'),
+        parentName: findClientColumnIndex('Имя родителя'),
+        phone: findClientColumnIndex('Телефон'),
+        price: findClientColumnIndex('Стоимость разового'),
+        type: findClientColumnIndex('Группа/Индива'),
+        service: findClientColumnIndex('Услуга'),
+        note: findClientColumnIndex('Примечание')
+      };
+
+      if (clientColIndexes.name === -1) {
+        clientErrors.push('Не найден обязательный столбец "Имя"');
+      } else {
+        // Находим первую свободную строку
+        var clientsLastRow = clientsSheet.getLastRow();
+        clientRow = clientsLastRow + 1;
+        if (clientsLastRow < headerRowIndex) {
+          clientRow = headerRowIndex + 1;
+        }
+
+        // Формируем имя с последними 4 цифрами телефона
+        var clientNameWithPhone = sourceData.client;
+        var phoneLastDigits = '';
+        
+        if (sourceData.phone) {
+          var phoneDigits = sourceData.phone.replace(/\D/g, '');
+          if (phoneDigits.length >= 4) {
+            phoneLastDigits = phoneDigits.slice(-4);
+            clientNameWithPhone = sourceData.client + ' (' + phoneLastDigits + ')';
+          }
+        }
+
+        // Записываем данные
+        clientsSheet.getRange(clientRow, clientColIndexes.name + 1).setValue(clientNameWithPhone);
+        clientFields.name = clientNameWithPhone;
+        
+        if (clientColIndexes.parentName !== -1) {
+          clientsSheet.getRange(clientRow, clientColIndexes.parentName + 1).setValue(sourceData.client);
+          clientFields.parentName = sourceData.client;
+        } else {
+          clientFields.parentName = 'не указано';
+        }
+        
+        if (clientColIndexes.phone !== -1 && sourceData.phone) {
+          var phoneDigits = sourceData.phone.replace(/\D/g, '');
+          if (phoneDigits.length === 10) {
+            phoneDigits = '7' + phoneDigits;
+          } else if (phoneDigits.length === 11 && phoneDigits.charAt(0) === '8') {
+            phoneDigits = '7' + phoneDigits.substring(1);
+          }
+          clientsSheet.getRange(clientRow, clientColIndexes.phone + 1).setValue(phoneDigits);
+          clientFields.phone = phoneDigits;
+        } else {
+          clientFields.phone = 'не указан';
+        }
+        
+        if (clientColIndexes.price !== -1) {
+          clientsSheet.getRange(clientRow, clientColIndexes.price + 1).setValue(CLIENT_CONFIG.PRICE);
+          clientFields.price = CLIENT_CONFIG.PRICE;
+        }
+        
+        if (clientColIndexes.type !== -1) {
+          clientsSheet.getRange(clientRow, clientColIndexes.type + 1).setValue(CLIENT_CONFIG.TYPE);
+          clientFields.type = CLIENT_CONFIG.TYPE;
+        } else {
+          clientFields.type = 'не найдено';
+        }
+        
+        if (clientColIndexes.service !== -1) {
+          clientsSheet.getRange(clientRow, clientColIndexes.service + 1).setValue(CLIENT_CONFIG.SERVICE);
+          clientFields.service = CLIENT_CONFIG.SERVICE;
+        }
+        
+        if (clientColIndexes.note !== -1 && noteText) {
+          clientsSheet.getRange(clientRow, clientColIndexes.note + 1).setNote(noteText);
+          clientFields.note = noteText;
+        } else {
+          clientFields.note = 'нет';
+        }
+        
+        clientSuccess = true;
+      }
+    }
+  } catch (e) {
+    if (e.message !== 'permission_error') {
+      clientErrors.push('Ошибка при записи в клиенты: ' + e.message);
+    }
+  }
+
+  // ===== ФОРМИРУЕМ УВЕДОМЛЕНИЕ =====
+  var message = '';
+  var hasErrors = !scheduleSuccess || !clientSuccess || scheduleErrors.length > 0 || clientErrors.length > 0;
+  
+  if (!hasErrors) {
+    message += '✅ ОПЕРАЦИЯ УСПЕШНО ВЫПОЛНЕНА!\n';
+  } else {
+    message += '⚠️ ОПЕРАЦИЯ ВЫПОЛНЕНА С ОШИБКАМИ!\n';
+  }
+  message += '='.repeat(50) + '\n\n';
+  
+  // Информация об исходных данных
+  message += '📋 ИСХОДНЫЕ ДАННЫЕ (строка ' + row + '):\n';
+  message += '  • Центр: ' + sourceData.center + '\n';
+  message += '  • Клиент: ' + sourceData.client + '\n';
+  message += '  • Телефон: ' + (sourceData.phone || 'не указан') + '\n\n';
+  
+  // Результат записи в расписание
+  message += '📅 ЗАПИСЬ В РАСПИСАНИЕ (файл "' + scheduleSS.getName() + '"):\n';
+  if (scheduleSuccess) {
+    message += '  ✅ Данные добавлены (строка ' + scheduleRow + ')\n';
+    message += '  • Имя в расписании: ' + scheduleClientName + '\n';
+  } else {
+    message += '  ❌ ОШИБКА: ' + scheduleErrors.join('; ') + '\n';
+  }
+  message += '\n';
+  
+  // Результат записи в клиенты
+  message += '👤 ЗАПИСЬ В КЛИЕНТЫ (файл "' + clientSS.getName() + '"):\n';
+  if (clientSuccess) {
+    message += '  ✅ Данные добавлены (строка ' + clientRow + ')\n';
+    message += '  • Имя: ' + clientFields.name + '\n';
+    message += '  • Имя родителя: ' + clientFields.parentName + '\n';
+    message += '  • Телефон: ' + clientFields.phone + '\n';
+    message += '  • Стоимость разового: ' + clientFields.price + '\n';
+    message += '  • Группа/Индива: ' + clientFields.type + '\n';
+    message += '  • Услуга: ' + clientFields.service + '\n';
+  } else {
+    message += '  ❌ ОШИБКА: ' + clientErrors.join('; ') + '\n';
+  }
+  
+  message += '\n' + '='.repeat(50);
+  SpreadsheetApp.getUi().alert(message);
+}
