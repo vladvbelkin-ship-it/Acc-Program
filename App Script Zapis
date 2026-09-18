@@ -1,0 +1,484 @@
+// ===== КОНСТАНТЫ ДЛЯ НАСТРОЙКИ =====
+// ID файлов для разных центров
+const SPREADSHEET_IDS = {
+  // Файлы для расписания
+  SCHEDULE: {
+    VOLNAYA: '15C9IVx2dtCrk1MAFhHRuzxlik8qsIfUccd7JeE4wTjk',    // ID файла Расписание Вольная
+    UDALTSOVA: '1cRoeQXtE1WSezyym53mB-RaIoIekOeYck1EDYY9Ik5w'   // ID файла Расписание Удальцова
+  },
+  // Файлы для учета клиентов
+  CLIENT: {
+    VOLNAYA: '1vnzdtTsMBT0SEPEKJVD2B5IagP2hxIWRI_SggKPIu9c',    // ID файла Учет Вольная
+    UDALTSOVA: '1QVDVUxaTBZITiWuybfl9vz8VMh70R7zCwHmPHfGj4bY'   // ID файла Учет Удальцова
+  }
+};
+
+// Настройки для расписания
+const SCHEDULE_CONFIG = {
+  SATURDAY_START_ROW: 15,    // Строка, с которой начинается суббота
+  MAX_ROWS: 50,              // Максимальное количество строк для поиска
+  SPECIALIST: 'Ирина Б',     // Имя специалиста по умолчанию
+  DEFAULT_TIME: '10:00-12:00', // Время по умолчанию
+  SERVICE: 'НПД'             // Услуга по умолчанию
+};
+
+// Настройки для таблицы Клиенты
+const CLIENT_CONFIG = {
+  PRICE: 6500,               // Стоимость разового занятия
+  TYPE: 'Индив',             // Тип занятия
+  SERVICE: 'НПД'             // Услуга
+};
+
+// ===== КОНФИГУРАЦИЯ ЦЕНТРОВ (для адресов и контактов) =====
+// Адреса берутся из библиотеки "Учёт Вольная" через CONSTANTS.ADDRESS
+const CENTER_INFO = {
+  VOLNAYA: {
+    name: 'Вольная',
+    address: 'ул. Вольная, д.28/4 кор.1',  // Из библиотеки CONSTANTS.ADDRESS
+    metro: 'м. Семеновская, м. Соколиная гора',
+    phone: '+7 (952) 365-55-80'  // TODO: Укажите телефон центра Вольная
+  },
+  UDALTSOVA: {
+    name: 'Удальцова',
+    address: 'ул. Удальцова, д.XX',  // TODO: Укажите точный адрес из библиотеки Учёт Удальцова
+    metro: 'м. Мичуринский проспект, м. Проспект Вернадского',
+    phone: '+7 (952) 365-55-80'  // TODO: Укажите телефон центра Удальцова
+  }
+};
+// ===== КОНЕЦ КОНСТАНТ =====
+
+
+/**
+ * Тестовая функция — проверяет доступ к Max API
+ */
+function testMaxAPI() {
+  const userId = '294283501';
+  const ACCESS_TOKEN = 'f9LHodD0cOKFFZGgXjHqVpTg9uj7bpC16_1QylBgr3HH99T1Qb3yuEMex_8EyCKW0_X-c21Cs_ujFltkw5Bg';
+  
+  const url = 'https://platform-api.max.ru/messages?user_id=' + encodeURIComponent(userId);
+  
+  Logger.log('Тест URL: ' + url);
+  Logger.log('Токен: ' + ACCESS_TOKEN.substring(0, 10) + '...');
+  
+  const payload = {
+    text: 'Тестовое сообщение из Запись клиентов',
+    format: 'html'
+  };
+  
+  const options = {
+    method: 'post',
+    headers: {
+      'Authorization': ACCESS_TOKEN,
+      'Content-Type': 'application/json'
+    },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+  
+  try {
+    const response = UrlFetchApp.fetch(url, options);
+    Logger.log('Статус: ' + response.getResponseCode());
+    Logger.log('Ответ: ' + response.getContentText());
+    
+    SpreadsheetApp.getUi().alert(
+      'Статус: ' + response.getResponseCode() + '\n\n' +
+      'Ответ: ' + response.getContentText()
+    );
+  } catch (error) {
+    Logger.log('Ошибка: ' + error.toString());
+    SpreadsheetApp.getUi().alert('Ошибка: ' + error.message);
+  }
+}
+
+
+
+/**
+ * Основная функция для меню 
+ */
+function showMenuZapis() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getActiveSheet();
+  var range = ss.getActiveRange();
+  var row = range.getRow();
+  
+  if (row < 3) {
+    SpreadsheetApp.getUi().alert('Нажмите кнопку в строке с данными (начиная со строки 3).');
+    return;
+  }
+  
+  // Берём имя клиента из столбца B (или из активного диапазона)
+  var cellValue = sheet.getRange(row, 2).getValue();
+  
+  var message = 'Выберите действие для "' + cellValue + '":\n' +
+      '1 - Добавить запись о клиенте в Расписание и Клиенты\n' +
+      '2 - Отправить сообщение клиенту';
+  
+  var response = SpreadsheetApp.getUi().prompt(
+    'Запись клиентов',
+    message,
+    SpreadsheetApp.getUi().ButtonSet.OK_CANCEL
+  );
+  
+  if (response.getSelectedButton() !== SpreadsheetApp.getUi().Button.OK) return;
+  
+  var action = response.getResponseText().trim();
+  
+  switch (action) {
+    case '1':
+      processOption1_ScheduleAndClients();
+      break;
+    case '2':
+      processOption2_SendMessage();
+      break;
+  }
+}
+
+// ===== ОПЦИЯ 2: Отправить сообщение клиенту =====
+function processOption2_SendMessage() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getActiveSheet();
+  var range = ss.getActiveRange();
+  var row = range.getRow();
+  
+  if (row < 3) {
+    SpreadsheetApp.getUi().alert('Нажмите кнопку в строке с данными (начиная со строки 3).');
+    return;
+  }
+
+  var headerRow = 2;
+  var lastCol = sheet.getLastColumn();
+  var headers = sheet.getRange(headerRow, 1, 1, lastCol).getValues()[0];
+  var rowData = sheet.getRange(row, 1, 1, lastCol).getValues()[0];
+
+  var sourceData = {
+    row: row,
+    center: getColumnValue(headers, rowData, 'В какой Центр'),
+    client: getColumnValue(headers, rowData, 'Клиент'),
+    phone: getColumnValue(headers, rowData, 'Телефон'),
+    date: getColumnValue(headers, rowData, 'Записаны на дату'),
+    time: getColumnValue(headers, rowData, 'Время'),
+    maxId: getColumnValue(headers, rowData, 'Max')
+  };
+
+  if (!sourceData.center || !sourceData.client) {
+    SpreadsheetApp.getUi().alert('Не заполнены Центр или Клиент');
+    return;
+  }
+
+  var centerKey = getCenterKey(sourceData.center);
+  if (!centerKey) {
+    SpreadsheetApp.getUi().alert('Неизвестный Центр: ' + sourceData.center);
+    return;
+  }
+
+  // Проверка Max ID
+  if (!sourceData.maxId) {
+    SpreadsheetApp.getUi().alert(
+      'В столбце "Max" не указан ID клиента.\n\n' +
+      'Невозможно отправить сообщение без Max ID.'
+    );
+    return;
+  }
+
+  // Формируем текст сообщения
+  var messageText = buildAppointmentMessage(sourceData, centerKey);
+
+  // Отправляем через Max
+  var sendResult = sendMaxMessage(sourceData.maxId, messageText);
+
+  SpreadsheetApp.getUi().alert(
+    'Отправка сообщения клиенту "' + sourceData.client + '"\n\n' +
+    'Max ID: ' + sourceData.maxId + '\n\n' +
+    'Результат:\n' + sendResult
+  );
+}
+
+// ===== Вспомогательные функции для Опции 2 =====
+
+function getColumnValue(headers, rowData, partialName) {
+  for (var i = 0; i < headers.length; i++) {
+    var header = String(headers[i]).trim().toLowerCase();
+    var searchName = partialName.trim().toLowerCase();
+    if (header.indexOf(searchName) !== -1) {
+      return (i < rowData.length) ? String(rowData[i]).trim() : '';
+    }
+  }
+  return '';
+}
+
+function getCenterKey(centerName) {
+  var centerLower = centerName.toLowerCase();
+  if (centerLower.indexOf('вольн') !== -1) return 'VOLNAYA';
+  if (centerLower.indexOf('удаль') !== -1) return 'UDALTSOVA';
+  return null;
+}
+
+function writeToClientDatabaseNew(clientSS, sourceData) {
+  try {
+    var clientsSheet = clientSS.getSheetByName('Клиенты');
+    if (!clientsSheet) {
+      return { success: false, error: 'Лист "Клиенты" не найден' };
+    }
+
+    var headerRowIndex = 2;
+    var lastRow = clientsSheet.getLastRow();
+    var lastCol = clientsSheet.getLastColumn();
+    var clientsHeaders = clientsSheet.getRange(headerRowIndex, 1, 1, lastCol).getValues()[0];
+
+    // Поиск столбцов
+    var nameIdx = findColIdx(clientsHeaders, 'Имя');
+    var parentIdx = findColIdx(clientsHeaders, 'Имя родителя');
+    var phoneIdx = findColIdx(clientsHeaders, 'Телефон');
+    var priceIdx = findColIdx(clientsHeaders, 'Стоимость разового');
+    // Столбец "Группа/\nИндива" — ищем по "Индив" или "Группа"
+    var typeIdx = findColIdx(clientsHeaders, 'Индив');
+    if (typeIdx === -1) typeIdx = findColIdx(clientsHeaders, 'Группа');
+    var serviceIdx = findColIdx(clientsHeaders, 'Услуга');
+
+    if (nameIdx === -1) {
+      return { success: false, error: 'Столбец "Имя" не найден' };
+    }
+
+    // ===== ПРОВЕРКА ДУБЛИКАТОВ =====
+    for (var r = headerRowIndex + 1; r <= lastRow; r++) {
+      var existingName = String(clientsSheet.getRange(r, nameIdx + 1).getValue()).trim();
+      var existingBaseName = existingName.replace(/\s*\(\d{4}\)\s*$/, '').trim();
+      if (existingBaseName.toLowerCase() === sourceData.client.toLowerCase()) {
+        return {
+          success: true,
+          existing: true,
+          row: r,
+          message: 'Клиент "' + sourceData.client + '" уже существует'
+        };
+      }
+    }
+
+    // ===== ДОБАВЛЯЕМ НОВОГО КЛИЕНТА =====
+    var clientRow = lastRow + 1;
+
+    var clientNameWithPhone = sourceData.client;
+    if (sourceData.phone) {
+      var phoneDigits = sourceData.phone.replace(/\D/g, '');
+      if (phoneDigits.length >= 4) {
+        clientNameWithPhone = sourceData.client + ' (' + phoneDigits.slice(-4) + ')';
+      }
+    }
+
+    clientsSheet.getRange(clientRow, nameIdx + 1).setValue(clientNameWithPhone);
+    if (parentIdx !== -1) clientsSheet.getRange(clientRow, parentIdx + 1).setValue(sourceData.client);
+    
+    if (phoneIdx !== -1 && sourceData.phone) {
+      var phoneDigits = sourceData.phone.replace(/\D/g, '');
+      if (phoneDigits.length === 10) phoneDigits = '7' + phoneDigits;
+      else if (phoneDigits.length === 11 && phoneDigits.charAt(0) === '8') {
+        phoneDigits = '7' + phoneDigits.substring(1);
+      }
+      clientsSheet.getRange(clientRow, phoneIdx + 1).setValue(phoneDigits);
+    }
+    
+    if (priceIdx !== -1) clientsSheet.getRange(clientRow, priceIdx + 1).setValue(6500);
+    if (typeIdx !== -1) clientsSheet.getRange(clientRow, typeIdx + 1).setValue('Индив');
+    if (serviceIdx !== -1) clientsSheet.getRange(clientRow, serviceIdx + 1).setValue('НПД');
+
+    return {
+      success: true,
+      existing: false,
+      row: clientRow,
+      message: 'Клиент "' + clientNameWithPhone + '" добавлен'
+    };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+}
+
+function findColIdx(headers, partialName) {
+  for (var i = 0; i < headers.length; i++) {
+    var header = String(headers[i]).trim().toLowerCase();
+    var searchName = partialName.trim().toLowerCase();
+    if (header.indexOf(searchName) !== -1) return i;
+  }
+  return -1;
+}
+
+function buildAppointmentMessage(sourceData, centerKey) {
+  var centerInfo = CENTER_INFO[centerKey];
+  var dateStr = '';
+  
+  if (sourceData.date) {
+    if (sourceData.date instanceof Date) {
+      dateStr = Utilities.formatDate(sourceData.date, Session.getScriptTimeZone(), 'dd.MM.yyyy');
+    } else {
+      dateStr = String(sourceData.date);
+    }
+  } else {
+    dateStr = '[дата не указана]';
+  }
+
+  var timeStr = sourceData.time ? String(sourceData.time) : '[время не указано]';
+
+  return 'Ваш ребенок ' + sourceData.client + ' записан на нейропсихологическую диагностику на ' + dateStr + ' в ' + timeStr + '.\n\n' +
+    'На диагностику желательно принести:\n' +
+    '• медицинскую карту (если она на руках);\n' +
+    '• заключения других специалистов;\n' +
+    '• результаты обследований (ЭЭГ, МРТ);\n' +
+    '• тетради по русскому языку и математике (если школьник).\n\n' +
+    'Длительность диагностики около 2-х часов.\n' +
+    'Стоимость - 6500 р.\n\n' +
+    'Наш адрес: ' + centerInfo.address + '\n' +
+    (centerInfo.metro ? 'Метро: ' + centerInfo.metro + '\n' : '') +
+    '\nНакануне диагностики мы свяжемся с Вами.';
+}
+
+/**
+ * Отправляет сообщение в Max по user_id напрямую
+ * @param {string|number} maxId - ID пользователя в Max (из столбца "Max")
+ * @param {string} messageText - Текст сообщения
+ * @returns {string} Результат отправки
+ */
+function sendMaxMessage(maxId, messageText) {
+  try {
+    if (!maxId) return 'Ошибка: Max ID не указан';
+    if (!messageText || messageText.length > 4000) {
+      return 'Ошибка: сообщение пустое или превышает 4000 символов';
+    }
+
+    // Вызываем функцию из библиотеки
+    Uchet_Volnaya_library.sendMessageToMAX_byId(maxId, messageText);
+
+    return 'Сообщение отправлено в Max (ID: ' + maxId + ')';
+  } catch (e) {
+    return 'Ошибка отправки: ' + e.message;
+  }
+}
+
+function writeToSchedule(scheduleSS, sourceData) {
+  try {
+    var targetSheet = scheduleSS.getSheetByName('Расписание');
+    if (!targetSheet) {
+      return { success: false, error: 'Лист "Расписание" не найден' };
+    }
+
+    var saturdayStartRow = SCHEDULE_CONFIG.SATURDAY_START_ROW;
+    var colTime = 8;
+    var colSpecialist = 9;
+    var colClient = 10;
+    var colService = 11;
+
+    var currentRow = saturdayStartRow;
+    while (currentRow < saturdayStartRow + SCHEDULE_CONFIG.MAX_ROWS) {
+      var timeValue = targetSheet.getRange(currentRow, colTime + 1).getValue();
+      if (!timeValue || timeValue === '') break;
+      currentRow++;
+    }
+
+    if (currentRow >= saturdayStartRow + SCHEDULE_CONFIG.MAX_ROWS) {
+      return { success: false, error: 'Нет свободных строк в субботе' };
+    }
+
+    var scheduleClientName = sourceData.client;
+    if (sourceData.phone) {
+      var phoneDigits = sourceData.phone.replace(/\D/g, '');
+      if (phoneDigits.length >= 4) {
+        scheduleClientName = sourceData.client + ' (' + phoneDigits.slice(-4) + ')';
+      }
+    }
+
+    targetSheet.getRange(currentRow, colSpecialist + 1).setValue(SCHEDULE_CONFIG.SPECIALIST);
+    targetSheet.getRange(currentRow, colClient + 1).setValue(scheduleClientName);
+    targetSheet.getRange(currentRow, colService + 1).setValue(SCHEDULE_CONFIG.SERVICE);
+
+    var timeValue = targetSheet.getRange(currentRow, colTime + 1).getValue();
+    if (!timeValue || timeValue === '') {
+      targetSheet.getRange(currentRow, colTime + 1).setValue(SCHEDULE_CONFIG.DEFAULT_TIME);
+    }
+
+    return { success: true, row: currentRow };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+}
+
+// ===== ОПЦИЯ 1: Добавить запись в Расписание и Клиенты =====
+function processOption1_ScheduleAndClients() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getActiveSheet();
+  var range = ss.getActiveRange();
+  var row = range.getRow();
+  
+  if (row < 3) {
+    SpreadsheetApp.getUi().alert('Нажмите кнопку в строке с данными (начиная со строки 3).');
+    return;
+  }
+
+  var headerRow = 2;
+  var lastCol = sheet.getLastColumn();
+  var headers = sheet.getRange(headerRow, 1, 1, lastCol).getValues()[0];
+  var rowData = sheet.getRange(row, 1, 1, lastCol).getValues()[0];
+
+  var sourceData = {
+    row: row,
+    center: getColumnValue(headers, rowData, 'В какой Центр'),
+    client: getColumnValue(headers, rowData, 'Клиент'),
+    phone: getColumnValue(headers, rowData, 'Телефон'),
+    date: getColumnValue(headers, rowData, 'Записаны на дату'),
+    time: getColumnValue(headers, rowData, 'Время'),
+    maxId: getColumnValue(headers, rowData, 'Max'),
+    description: getColumnValue(headers, rowData, 'Описание'),
+    note: getColumnValue(headers, rowData, 'Примечание')
+  };
+
+  if (!sourceData.center || !sourceData.client) {
+    SpreadsheetApp.getUi().alert('Не заполнены Центр или Клиент');
+    return;
+  }
+
+  var centerKey = getCenterKey(sourceData.center);
+  if (!centerKey) {
+    SpreadsheetApp.getUi().alert('Неизвестный Центр: ' + sourceData.center);
+    return;
+  }
+
+  var scheduleFileId = SPREADSHEET_IDS.SCHEDULE[centerKey];
+  var clientFileId = SPREADSHEET_IDS.CLIENT[centerKey];
+  var centerName = CENTER_INFO[centerKey].name;
+
+  var scheduleSS, clientSS;
+  var openErrors = [];
+
+  try {
+    scheduleSS = SpreadsheetApp.openById(scheduleFileId);
+  } catch (e) {
+    openErrors.push('Не удалось открыть "Расписание ' + centerName + '": ' + e.message);
+  }
+
+  try {
+    clientSS = SpreadsheetApp.openById(clientFileId);
+  } catch (e) {
+    openErrors.push('Не удалось открыть "Учет ' + centerName + '": ' + e.message);
+  }
+
+  if (openErrors.length > 0) {
+    SpreadsheetApp.getUi().alert('Ошибка:\n\n' + openErrors.join('\n\n'));
+    return;
+  }
+
+  // Запись в Расписание
+  var scheduleResult = writeToSchedule(scheduleSS, sourceData);
+
+  // Запись в Клиенты (с проверкой дубликатов)
+  var clientResult = writeToClientDatabaseNew(clientSS, sourceData);
+
+  // Итоговое сообщение
+  var message = '';
+  if (scheduleResult.success && clientResult.success) {
+    message = 'ОПЕРАЦИЯ УСПЕШНО ВЫПОЛНЕНА!\n\n';
+    message += 'Расписание: строка ' + scheduleResult.row + '\n';
+    message += 'Клиенты: ' + clientResult.message;
+  } else {
+    message = 'ОПЕРАЦИЯ ВЫПОЛНЕНА С ОШИБКАМИ\n\n';
+    if (!scheduleResult.success) message += 'Расписание: ' + scheduleResult.error + '\n';
+    if (!clientResult.success) message += 'Клиенты: ' + clientResult.error;
+  }
+
+  SpreadsheetApp.getUi().alert(message);
+}
